@@ -1,7 +1,16 @@
+FIPS_ENABLED?=true
+
 GOHOSTOS:=$(shell go env GOHOSTOS)
 GOPATH:=$(shell go env GOPATH)
+GOOS?=$(shell go env GOOS)
+GOARCH?=$(shell go env GOARCH)
+GOBIN?=$(shell go env GOBIN)
+GOFLAGS_MOD ?=
 VERSION=$(shell git describe --tags --always)
 DOCKER := $(shell type -P podman || type -P docker)
+
+GOENV=GOOS=${GOOS} GOARCH=${GOARCH} CGO_ENABLED=1 GOFLAGS="${GOFLAGS_MOD}"
+GOBUILDFLAGS=-gcflags="all=-trimpath=${GOPATH}" -asmflags="all=-trimpath=${GOPATH}"
 
 ifeq ($(GOHOSTOS), windows)
 	#the `find.exe` is different from `find` in bash/shell.
@@ -9,6 +18,14 @@ ifeq ($(GOHOSTOS), windows)
 	#changed to use git-bash.exe to run find cli or other cli friendly, caused of every developer has a Git.
 	#Git_Bash= $(subst cmd\,bin\bash.exe,$(dir $(shell where git)))
 	Git_Bash=$(subst \,/,$(subst cmd\,bin\bash.exe,$(dir $(shell where git))))
+endif
+
+ifeq (${FIPS_ENABLED}, true)
+GOFLAGS_MOD+=-tags=fips_enabled
+GOFLAGS_MOD:=$(strip ${GOFLAGS_MOD})
+$(warning Setting GOEXPERIMENT=strictfipsruntime,boringcrypto - this generally causes builds to fail unless building inside the provided Dockerfile. If building locally, run `FIPS_ENABLED=false make build`)
+GOENV+=GOEXPERIMENT=strictfipsruntime,boringcrypto
+GOENV:=$(strip ${GOENV})
 endif
 
 .PHONY: init
@@ -23,7 +40,7 @@ config:
 	@echo "Generating internal protos"
 	@$(DOCKER) build -t custom-protoc ./api
 	@$(DOCKER) run -t --rm -v $(PWD)/internal:/internal -v $(PWD)/third_party:/third_party \
-	-w=/internal/conf/ custom-protoc sh -c "buf generate"		
+	-w=/internal/conf/ custom-protoc sh -c "buf generate"
 
 .PHONY: api
 # generate api proto
@@ -34,12 +51,16 @@ api:
 	-w=/api/ custom-protoc sh -c "buf generate && \
 		buf lint && \
 		buf breaking --against 'buf.build/project-kessel/relations-api' "
-		
+
 
 .PHONY: build
 # build
 build:
-	mkdir -p bin/ && go build -ldflags "-X main.Version=$(VERSION)" -o ./bin/ ./...
+	mkdir -p bin/ && ${GOENV} GOOS=${GOOS} go build ${GOBUILDFLAGS} -ldflags "-X main.Version=$(VERSION)" -o ./bin/ ./...
+
+.PHONY: docker-build-push
+docker-build-push:
+	./build_deploy.sh
 
 # run all tests
 .PHONY: test
